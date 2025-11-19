@@ -3,6 +3,7 @@ import torch
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
 import os
+import traceback
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -71,18 +72,30 @@ st.markdown("### Upload an image or use your webcam to detect objects.")
 
 # Model Loading
 @st.cache_resource
-def load_model(model_id):
+def load_model(model_id: str) -> tuple[CLIPModel | None, CLIPProcessor | None, str | None]:
+    """
+    Load the CLIP model and processor.
+
+    Args:
+        model_id (str): The Hugging Face model ID.
+
+    Returns:
+        tuple: (model, processor, error_trace) containing the loaded artifacts or error details.
+    """
     try:
         model = CLIPModel.from_pretrained(model_id)
         processor = CLIPProcessor.from_pretrained(model_id)
-        return model, processor
-    except Exception as e:
-        st.error(f"Failed to load model: {e}")
-        return None, None
+        return model, processor, None
+    except Exception:
+        return None, None, traceback.format_exc()
 
-model, processor = load_model(model_id)
+model, processor, error_trace = load_model(model_id)
 
 if not model:
+    st.error("Failed to load model.")
+    if error_trace:
+        with st.expander("See error details"):
+            st.code(error_trace)
     st.warning("Please check the Model ID or your internet connection.")
     st.stop()
 

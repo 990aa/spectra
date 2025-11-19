@@ -52,3 +52,8 @@ print(probs)
 
 ## Demo
 A Streamlit demo is available in the repository. Run `streamlit run app.py` to launch.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Copyright (c) 2025 Abdul Ahad.

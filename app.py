@@ -24,9 +24,12 @@ st.markdown("""
         background: linear-gradient(to right, #0f2027, #203a43, #2c5364);
         color: white;
     }
+    h1, h2, h3, h4, h5, h6, p, div, span, label, .stMarkdown {
+        color: white !important;
+    }
     .stButton>button {
         background-color: #00d2ff;
-        color: white;
+        color: white !important;
         border-radius: 20px;
         border: none;
         padding: 10px 24px;
@@ -44,6 +47,10 @@ st.markdown("""
         padding: 20px;
         margin-bottom: 20px;
         border: 1px solid rgba(255, 255, 255, 0.2);
+    }
+    /* Fix input fields text color */
+    .stTextInput input, .stTextArea textarea {
+        color: white !important;
     }
     h1, h2, h3 {
         font-family: 'Outfit', sans-serif;
@@ -92,12 +99,12 @@ def load_model(model_id: str) -> tuple[CLIPModel | None, CLIPProcessor | None, s
 model, processor, error_trace = load_model(model_id)
 
 if not model:
-    st.error("Failed to load model.")
+    st.warning("Model not loaded. You can still browse the interface, but analysis will be disabled.")
     if error_trace:
         with st.expander("See error details"):
             st.code(error_trace)
-    st.warning("Please check the Model ID or your internet connection.")
-    st.stop()
+else:
+    st.success("Model loaded successfully!")
 
 # Input Method
 input_method = st.radio("Select Input", ["Upload Image", "Webcam"], horizontal=True)
@@ -124,7 +131,7 @@ if image:
     with col2:
         st.subheader("Analysis Results")
         
-        if st.button("Analyze Image"):
+        if st.button("Analyze Image", disabled=(model is None)):
             with st.spinner("Analyzing..."):
                 # Prepare classes
                 classes = [c.strip() for c in class_input.split(",") if c.strip()]

@@ -10,4 +10,5 @@ wheels/
 .venv
 .env
 .ruff_cache/
+README_SPACES.md
 

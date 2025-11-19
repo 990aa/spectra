@@ -1,132 +1,65 @@
-import streamlit as st
+import gradio as gr
 from PIL import Image
 import numpy as np
 import cv2
 import torch
 from transformers import CLIPProcessor, CLIPModel
-import traceback
 from dotenv import load_dotenv
-import tempfile
+import os
 from pathlib import Path
 
 # Load environment variables
 load_dotenv()
 
-# Page Config
-st.set_page_config(
-    page_title="Spectra | Object Recognition",
-    page_icon="👁️",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+# Global model variables
+MODEL_CACHE = {}
 
-# Custom CSS for Aesthetic Interface
-st.markdown("""
-<style>
-    .stApp {
-        background: linear-gradient(to right, #0f2027, #203a43, #2c5364);
-        color: white;
-    }
-    h1, h2, h3, h4, h5, h6, p, div, span, label, .stMarkdown {
-        color: white !important;
-    }
-    .stButton>button {
-        background-color: #00d2ff;
-        color: white !important;
-        border-radius: 20px;
-        border: none;
-        padding: 10px 24px;
-        font-weight: bold;
-        transition: all 0.3s ease;
-    }
-    .stButton>button:hover {
-        background-color: #3a7bd5;
-        transform: scale(1.05);
-    }
-    .card {
-        background: rgba(255, 255, 255, 0.1);
-        backdrop-filter: blur(10px);
-        border-radius: 15px;
-        padding: 20px;
-        margin-bottom: 20px;
-        border: 1px solid rgba(255, 255, 255, 0.2);
-    }
-    /* Fix input fields text color */
-    .stTextInput input, .stTextArea textarea {
-        color: white !important;
-    }
-    h1, h2, h3 {
-        font-family: 'Outfit', sans-serif;
-        font-weight: 700;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# Sidebar
-with st.sidebar:
-    st.title("Spectra 👁️")
-    st.markdown("---")
-    st.markdown("### Model Settings")
-    model_id = st.text_input("Model ID", "990aa/spectra")
+def load_model(model_id: str = "990aa/spectra"):
+    """Load CLIP model and processor with caching."""
+    if model_id in MODEL_CACHE:
+        return MODEL_CACHE[model_id]
     
-    st.markdown("### Object Classes")
-    default_classes = """person, face, cat, dog, car, truck, bicycle, motorcycle, airplane, boat, 
-tree, plant, flower, house, building, phone, laptop, computer, book, cup, 
-bottle, chair, table, sofa, bed, bird, horse, sheep, cow, elephant, 
-food, pizza, apple, orange, banana, sports ball, tennis racket, clock, 
-keyboard, mouse, tv, backpack, umbrella, handbag, traffic light, fire hydrant"""
-    class_input = st.text_area("Enter object classes (comma separated)", default_classes, height=200)
-    
-    st.markdown("### Detection Settings")
-    confidence_threshold = st.slider("Confidence Threshold", 0.0, 1.0, 0.15, 0.05)
-    top_k = st.slider("Top K Results", 1, 10, 5)
-    
-    st.markdown("---")
-    st.info("🎯 Spectra uses CLIP-based architecture for zero-shot object recognition trained on LAION-5B, COCO, Visual Genome, and more.")
-
-# Main Content
-st.title("🎯 Spectra Object Recognition")
-st.markdown("### Detect and describe objects in images, webcam, or videos")
-
-# Model Loading
-@st.cache_resource
-def load_model(model_id: str) -> tuple[CLIPModel | None, CLIPProcessor | None, str | None]:
-    """
-    Load the CLIP model and processor.
-
-    Args:
-        model_id (str): The Hugging Face model ID.
-
-    Returns:
-        tuple: (model, processor, error_trace) containing the loaded artifacts or error details.
-    """
     try:
         model = CLIPModel.from_pretrained(model_id)
         processor = CLIPProcessor.from_pretrained(model_id)
+        
         # Move to GPU if available
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model = model.to(device)
         model.eval()
-        return model, processor, None
-    except Exception:
-        return None, None, traceback.format_exc()
+        
+        MODEL_CACHE[model_id] = (model, processor, device)
+        return model, processor, device
+    except Exception as e:
+        return None, None, str(e)
 
-def analyze_image(image: Image.Image, classes: list, model, processor, threshold: float = 0.15, top_k: int = 5):
+def analyze_image(image: Image.Image, class_text: str, model_id: str, threshold: float, top_k: int):
     """
     Analyze an image and return detected objects with confidence scores.
     
     Args:
         image: PIL Image to analyze
-        classes: List of object class names
-        model: CLIP model
-        processor: CLIP processor
+        class_text: Comma-separated string of object classes
+        model_id: HuggingFace model ID
         threshold: Minimum confidence threshold
         top_k: Number of top results to return
         
     Returns:
-        List of tuples (class_name, confidence_score)
+        Tuple of (results_text, annotated_image)
     """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if image is None:
+        return "⚠️ Please upload an image first.", None
+    
+    # Load model
+    model, processor, device = load_model(model_id)
+    
+    if model is None:
+        return f"⚠️ Error loading model: {device}", None
+    
+    # Prepare classes
+    classes = [c.strip() for c in class_text.split(",") if c.strip()]
+    if not classes:
+        return "⚠️ Please enter at least one object class.", None
     
     # Prepare inputs
     inputs = processor(text=classes, images=image, return_tensors="pt", padding=True)
@@ -142,248 +75,312 @@ def analyze_image(image: Image.Image, classes: list, model, processor, threshold
     top_probs, top_indices = probs[0].topk(min(top_k, len(classes)))
     
     results = []
+    results_text = "## 🔍 Detection Results\n\n"
+    
+    detected_objects = []
     for prob, idx in zip(top_probs, top_indices):
         if prob.item() >= threshold:
-            results.append((classes[idx], prob.item()))
+            label = classes[idx]
+            confidence = prob.item()
+            results.append((label, confidence))
+            detected_objects.append(label)
+            results_text += f"**🎯 {label.title()}**: {confidence:.1%}\n\n"
     
-    return results
+    if not results:
+        results_text = "⚠️ No objects detected above the confidence threshold."
+    else:
+        # Add description
+        results_text += "\n---\n\n### 📝 Description\n\n"
+        top_objects = [label for label, _ in results[:3]]
+        description = f"This image contains: **{', '.join(top_objects)}**."
+        results_text += description
+    
+    # Annotate image
+    annotated = image.copy()
+    return results_text, annotated
 
-def process_video_frame(frame, classes, model, processor, threshold):
+def process_video(video_path: str, class_text: str, model_id: str, threshold: float, frame_skip: int):
     """
-    Process a single video frame and return annotated frame.
+    Process video and return annotated version.
     
     Args:
-        frame: OpenCV frame (BGR format)
-        classes: List of object classes
-        model: CLIP model
-        processor: CLIP processor
+        video_path: Path to input video
+        class_text: Comma-separated object classes
+        model_id: HuggingFace model ID
         threshold: Confidence threshold
+        frame_skip: Process every Nth frame
         
     Returns:
-        Annotated frame
+        Path to annotated video
     """
-    # Convert BGR to RGB
-    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    pil_image = Image.fromarray(rgb_frame)
+    if video_path is None:
+        return None, "⚠️ Please upload a video first."
     
-    # Analyze
-    results = analyze_image(pil_image, classes, model, processor, threshold, top_k=3)
+    # Load model
+    model, processor, device = load_model(model_id)
     
-    # Annotate frame
-    y_offset = 30
-    for label, confidence in results:
-        text = f"{label}: {confidence:.1%}"
-        cv2.putText(frame, text, (10, y_offset), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        y_offset += 30
+    if model is None:
+        return None, f"⚠️ Error loading model: {device}"
     
-    return frame
-
-model, processor, error_trace = load_model(model_id)
-
-if not model:
-    st.error("⚠️ Model not loaded. Please check the model ID or your internet connection.")
-    if error_trace:
-        with st.expander("📋 See error details"):
-            st.code(error_trace)
-else:
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    st.success(f"✅ Model loaded successfully on {device.upper()}!")
-
-# Input Method Selection
-st.markdown("---")
-input_method = st.radio("📥 Select Input Method", 
-                        ["Upload Image", "Webcam Capture", "Upload Video"], 
-                        horizontal=True)
-
-# Prepare classes
-classes = [c.strip() for c in class_input.split(",") if c.strip()]
-if not classes:
-    classes = ["object", "item", "thing"]
-
-# ====================
-# IMAGE UPLOAD
-# ====================
-if input_method == "Upload Image":
-    uploaded_file = st.file_uploader("Choose an image...", type=["jpg", "png", "jpeg", "webp", "bmp"])
+    # Prepare classes
+    classes = [c.strip() for c in class_text.split(",") if c.strip()]
+    if not classes:
+        return None, "⚠️ Please enter at least one object class."
     
-    if uploaded_file and model:
-        image = Image.open(uploaded_file)
+    # Open video
+    cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    
+    # Create output video
+    output_path = video_path.replace('.mp4', '_processed.mp4')
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    
+    frame_count = 0
+    processed_frames = 0
+    
+    status_text = f"📊 Processing video: {total_frames} frames @ {fps} FPS\n\n"
+    
+    while cap.isOpened():
+        ret, frame = cap.read()
+        if not ret:
+            break
         
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.image(image, caption="📸 Uploaded Image", use_column_width=True)
-        
-        with col2:
-            st.subheader("🔍 Detection Results")
+        # Process frame at intervals
+        if frame_count % frame_skip == 0:
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            pil_image = Image.fromarray(rgb_frame)
             
-            with st.spinner("🔄 Analyzing image..."):
-                results = analyze_image(image, classes, model, processor, 
-                                       confidence_threshold, top_k)
+            # Analyze
+            inputs = processor(text=classes, images=pil_image, return_tensors="pt", padding=True)
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = model(**inputs)
+                logits_per_image = outputs.logits_per_image
+                probs = logits_per_image.softmax(dim=1).cpu()
+            
+            # Get top 3 results
+            top_probs, top_indices = probs[0].topk(min(3, len(classes)))
+            
+            # Annotate frame
+            y_offset = 30
+            for prob, idx in zip(top_probs, top_indices):
+                if prob.item() >= threshold:
+                    label = classes[idx]
+                    confidence = prob.item()
+                    text = f"{label}: {confidence:.1%}"
+                    cv2.putText(frame, text, (10, y_offset), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    y_offset += 30
+            
+            processed_frames += 1
+        
+        out.write(frame)
+        frame_count += 1
+    
+    cap.release()
+    out.release()
+    
+    status_text += f"✅ Processed {processed_frames} frames out of {total_frames}\n"
+    status_text += f"📥 Video saved to: {output_path}"
+    
+    return output_path, status_text
+
+# Default object classes
+DEFAULT_CLASSES = """person, face, cat, dog, car, truck, bicycle, motorcycle, airplane, boat, 
+tree, plant, flower, house, building, phone, laptop, computer, book, cup, 
+bottle, chair, table, sofa, bed, bird, horse, sheep, cow, elephant, 
+food, pizza, apple, orange, banana, sports ball, tennis racket, clock, 
+keyboard, mouse, tv, backpack, umbrella, handbag, traffic light, fire hydrant"""
+
+# CSS for styling
+custom_css = """
+.gradio-container {
+    font-family: 'Arial', sans-serif;
+}
+.header {
+    text-align: center;
+    padding: 20px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 10px;
+    margin-bottom: 20px;
+}
+.footer {
+    text-align: center;
+    margin-top: 30px;
+    padding: 20px;
+    color: #666;
+}
+"""
+
+# Create Gradio interface
+with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
+    gr.HTML("""
+    <div class="header">
+        <h1>🎯 Spectra Object Recognition</h1>
+        <p>Detect and describe objects in images and videos using CLIP-based AI</p>
+    </div>
+    """)
+    
+    with gr.Row():
+        with gr.Column(scale=1):
+            gr.Markdown("## ⚙️ Settings")
+            
+            model_id = gr.Textbox(
+                label="Model ID",
+                value="990aa/spectra",
+                placeholder="HuggingFace model ID",
+                info="Enter a HuggingFace model repository ID"
+            )
+            
+            class_input = gr.Textbox(
+                label="Object Classes",
+                value=DEFAULT_CLASSES,
+                lines=8,
+                placeholder="Enter comma-separated object classes",
+                info="List of objects to detect"
+            )
+            
+            threshold = gr.Slider(
+                minimum=0.0,
+                maximum=1.0,
+                value=0.15,
+                step=0.05,
+                label="Confidence Threshold",
+                info="Minimum confidence for detection"
+            )
+            
+            top_k = gr.Slider(
+                minimum=1,
+                maximum=10,
+                value=5,
+                step=1,
+                label="Top K Results",
+                info="Number of top predictions to show"
+            )
+            
+            device_info = gr.Markdown(
+                f"**Device**: {'🚀 CUDA (GPU)' if torch.cuda.is_available() else '💻 CPU'}"
+            )
+        
+        with gr.Column(scale=2):
+            with gr.Tab("📸 Image Analysis"):
+                gr.Markdown("### Upload an image to detect objects")
                 
-                if results:
-                    for label, confidence in results:
-                        st.markdown(f"""
-                        <div style="margin-bottom: 15px;">
-                            <div style="display: flex; justify-content: space-between;">
-                                <span style="font-size: 18px;"><b>🎯 {label.title()}</b></span>
-                                <span style="font-size: 18px; color: #00d2ff;"><b>{confidence:.1%}</b></span>
-                            </div>
-                            <div style="background-color: rgba(255,255,255,0.2); height: 10px; border-radius: 5px; margin-top: 5px;">
-                                <div style="background: linear-gradient(90deg, #00d2ff, #3a7bd5); width: {confidence*100}%; height: 100%; border-radius: 5px;"></div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
+                with gr.Row():
+                    image_input = gr.Image(
+                        type="pil",
+                        label="Upload Image",
+                        height=400
+                    )
                     
-                    # Generate description
-                    st.markdown("---")
-                    st.subheader("📝 Description")
-                    top_objects = [label for label, _ in results[:3]]
-                    description = f"This image contains: {', '.join(top_objects)}."
-                    st.write(description)
-                else:
-                    st.warning("No objects detected above the confidence threshold.")
-
-# ====================
-# WEBCAM CAPTURE
-# ====================
-elif input_method == "Webcam Capture":
-    st.markdown("### 📷 Capture from Webcam")
-    camera_image = st.camera_input("Take a picture")
-    
-    if camera_image and model:
-        image = Image.open(camera_image)
-        
-        col1, col2 = st.columns([1, 1])
-        
-        with col1:
-            st.image(image, caption="📸 Captured Image", use_column_width=True)
-        
-        with col2:
-            st.subheader("🔍 Detection Results")
-            
-            with st.spinner("🔄 Analyzing..."):
-                results = analyze_image(image, classes, model, processor, 
-                                       confidence_threshold, top_k)
+                    with gr.Column():
+                        image_output = gr.Markdown(label="Results")
+                        image_annotated = gr.Image(label="Annotated Image")
                 
-                if results:
-                    for label, confidence in results:
-                        st.markdown(f"""
-                        <div style="margin-bottom: 15px;">
-                            <div style="display: flex; justify-content: space-between;">
-                                <span style="font-size: 18px;"><b>🎯 {label.title()}</b></span>
-                                <span style="font-size: 18px; color: #00d2ff;"><b>{confidence:.1%}</b></span>
-                            </div>
-                            <div style="background-color: rgba(255,255,255,0.2); height: 10px; border-radius: 5px; margin-top: 5px;">
-                                <div style="background: linear-gradient(90deg, #00d2ff, #3a7bd5); width: {confidence*100}%; height: 100%; border-radius: 5px;"></div>
-                            </div>
-                        </div>
-                        """, unsafe_allow_html=True)
-                    
-                    # Generate description
-                    st.markdown("---")
-                    st.subheader("📝 Description")
-                    top_objects = [label for label, _ in results[:3]]
-                    description = f"The webcam shows: {', '.join(top_objects)}."
-                    st.write(description)
-                else:
-                    st.warning("No objects detected above the confidence threshold.")
-
-# ====================
-# VIDEO UPLOAD
-# ====================
-elif input_method == "Upload Video":
-    st.markdown("### 🎥 Upload and Analyze Video")
-    uploaded_video = st.file_uploader("Choose a video file...", type=["mp4", "avi", "mov", "mkv"])
-    
-    if uploaded_video and model:
-        # Save uploaded video to temp file
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-        tfile.write(uploaded_video.read())
-        video_path = tfile.name
-        
-        # Video processing options
-        col1, col2 = st.columns(2)
-        with col1:
-            process_video = st.button("🎬 Process Video", type="primary")
-        with col2:
-            frame_skip = st.slider("Process every Nth frame", 1, 30, 5, 
-                                   help="Higher values = faster processing, lower accuracy")
-        
-        if process_video:
-            # Open video
-            cap = cv2.VideoCapture(video_path)
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps = int(cap.get(cv2.CAP_PROP_FPS))
-            
-            st.info(f"📊 Video Info: {total_frames} frames @ {fps} FPS")
-            
-            # Create output video
-            output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            out = None
-            
-            # Progress tracking
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            frame_display = st.empty()
-            
-            frame_count = 0
-            processed_count = 0
-            
-            while cap.isOpened():
-                ret, frame = cap.read()
-                if not ret:
-                    break
+                image_button = gr.Button("🔍 Analyze Image", variant="primary", size="lg")
                 
-                # Initialize output writer
-                if out is None:
-                    height, width = frame.shape[:2]
-                    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-                
-                # Process frame at intervals
-                if frame_count % frame_skip == 0:
-                    processed_frame = process_video_frame(frame, classes, model, 
-                                                         processor, confidence_threshold)
-                    out.write(processed_frame)
-                    
-                    # Update display
-                    if processed_count % 10 == 0:
-                        rgb_frame = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                        frame_display.image(rgb_frame, caption=f"Processing frame {frame_count}/{total_frames}", 
-                                          use_column_width=True)
-                    
-                    processed_count += 1
-                else:
-                    out.write(frame)
-                
-                frame_count += 1
-                progress_bar.progress(min(frame_count / total_frames, 1.0))
-                status_text.text(f"Processing: {frame_count}/{total_frames} frames")
-            
-            cap.release()
-            out.release()
-            
-            st.success("✅ Video processing complete!")
-            
-            # Display processed video
-            st.video(output_path)
-            
-            # Download button
-            with open(output_path, 'rb') as f:
-                st.download_button(
-                    label="📥 Download Processed Video",
-                    data=f,
-                    file_name="spectra_processed_video.mp4",
-                    mime="video/mp4"
+                gr.Examples(
+                    examples=[],
+                    inputs=image_input,
+                    label="Example Images"
                 )
+            
+            with gr.Tab("🎥 Video Processing"):
+                gr.Markdown("### Upload a video to detect objects in motion")
+                
+                with gr.Row():
+                    video_input = gr.Video(label="Upload Video")
+                    video_output = gr.Video(label="Processed Video")
+                
+                frame_skip = gr.Slider(
+                    minimum=1,
+                    maximum=30,
+                    value=5,
+                    step=1,
+                    label="Frame Skip",
+                    info="Process every Nth frame (higher = faster)"
+                )
+                
+                video_status = gr.Markdown("")
+                video_button = gr.Button("🎬 Process Video", variant="primary", size="lg")
+            
+            with gr.Tab("ℹ️ About"):
+                gr.Markdown("""
+                ## About Spectra
+                
+                Spectra is an advanced object recognition model trained on:
+                - 🌐 **LAION-5B**: Large-scale image-text pairs
+                - 🎯 **COCO**: Common Objects in Context
+                - 👁️ **Visual Genome**: Detailed scene understanding
+                - 📦 **Objects365**: Diverse object categories
+                
+                ### Features
+                - ✅ Zero-shot object detection
+                - ✅ Real-time image analysis
+                - ✅ Video processing with annotations
+                - ✅ Customizable object classes
+                - ✅ GPU acceleration support
+                
+                ### How to Use
+                1. **Image Analysis**: Upload an image and click "Analyze Image"
+                2. **Video Processing**: Upload a video, adjust frame skip, and click "Process Video"
+                3. **Custom Classes**: Edit the object classes list to detect specific items
+                4. **Adjust Threshold**: Increase for fewer, more confident detections
+                
+                ### Model Training
+                The model uses CLIP-style contrastive learning with:
+                - ViT-B/16 backbone
+                - Mixed precision (FP16) training
+                - Gradient accumulation
+                - Multi-phase training pipeline
+                
+                ### Deployment
+                This app can run:
+                - 💻 **Locally**: `python app.py`
+                - ☁️ **HuggingFace Spaces**: Deploy as a public or private Space
+                - 🐳 **Docker**: Containerized deployment
+                
+                ---
+                
+                **License**: See LICENSE.md  
+                **Repository**: [github.com/990aa/spectra](https://github.com/990aa/spectra)
+                """)
+    
+    # Event handlers
+    image_button.click(
+        fn=analyze_image,
+        inputs=[image_input, class_input, model_id, threshold, top_k],
+        outputs=[image_output, image_annotated]
+    )
+    
+    video_button.click(
+        fn=process_video,
+        inputs=[video_input, class_input, model_id, threshold, frame_skip],
+        outputs=[video_output, video_status]
+    )
+    
+    gr.HTML("""
+    <div class="footer">
+        <p>🎯 Spectra Object Recognition | Powered by CLIP & Transformers</p>
+        <p>Trained on LAION-5B, COCO, Visual Genome, and more</p>
+    </div>
+    """)
 
-# Footer
-st.markdown("---")
-st.markdown("""
-<div style="text-align: center; color: rgba(255,255,255,0.7);">
-    <p>Spectra Object Recognition | Powered by CLIP & Transformers</p>
-    <p>Trained on LAION-5B, COCO, Visual Genome, and more</p>
-</div>
-""", unsafe_allow_html=True)
+# Launch configuration
+if __name__ == "__main__":
+    # Check if running on HuggingFace Spaces
+    is_spaces = os.getenv("SPACE_ID") is not None
+    
+    demo.launch(
+        server_name="0.0.0.0" if is_spaces else "127.0.0.1",
+        server_port=7860,
+        share=False,
+        show_error=True
+    )

@@ -1,8 +1,6 @@
 import streamlit as st
-import torch
 from PIL import Image
 from transformers import CLIPProcessor, CLIPModel
-import os
 import traceback
 from dotenv import load_dotenv
 

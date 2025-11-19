@@ -344,9 +344,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
                 ### Deployment
                 This app can run:
                 - 💻 **Locally**: `python app.py`
-                - ☁️ **HuggingFace Spaces**: Deploy as a public or private Space
-                - 🐳 **Docker**: Containerized deployment
-                
+                - ☁️ **HuggingFace Spaces**: Deploy as a public or private Space                
                 ---
                 
                 **License**: See LICENSE.md  
@@ -368,7 +366,7 @@ with gr.Blocks(css=custom_css, theme=gr.themes.Soft()) as demo:
     
     gr.HTML("""
     <div class="footer">
-        <p>🎯 Spectra Object Recognition | Powered by CLIP & Transformers</p>
+        <p>Spectra Object Recognition</p>
         <p>Trained on LAION-5B, COCO, Visual Genome, and more</p>
     </div>
     """)
